@@ -91,7 +91,10 @@ sub main {
     eval $re;
     my $url = $_;
 
-    print "$covered [$name]($url) ($lines) covers $covered of them\n";
+    my $name_without_spaces = $name;
+    $name_without_spaces =~ s/\s+/_/g;
+
+    print "$covered-$lines-$name_without_spaces [$name]($url) ($lines) covers $covered of them\n";
   }
 }
 
