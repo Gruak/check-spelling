@@ -4,7 +4,10 @@ package CheckSpelling::DictionaryCoverage;
 
 our $VERSION='0.1.0';
 use File::Basename;
+use Encode qw/decode_utf8 encode FB_DEFAULT/;
 use CheckSpelling::Util;
+
+my $hunspell;
 
 sub entry {
   my ($name) = @_;
@@ -22,6 +25,38 @@ sub entry {
   }
 }
 
+sub hunspell_entry {
+  my ($name) = @_;
+  unless (open ($handle, '<:utf8', $name)) {
+    print STDERR "Couldn't open dictionary `$name` (dictionary-not-found)\n";
+    return 0;
+  }
+  my $lines = <$handle>;
+  chomp $lines;
+  close $handle;
+  my $aff = $name;
+  my $encoding;
+  $aff =~ s/dic$/aff/;
+  if (open AFF, '<', $aff) {
+    while (<AFF>) {
+      next unless /^SET\s+(\S+)/;
+      $encoding = $1 if ($1 !~ /utf-8/i);
+      last;
+    }
+    close AFF;
+  }
+  my %map;
+  return {
+    name => $name,
+    handle => undef,
+    encoding => $encoding,
+    engine => Text::Hunspell->new($aff, $dict),
+    coverage => \%map,
+    uniq => 0,
+    lines => $lines
+  }
+}
+
 sub main {
   my ($check, @dictionaries) = @_;
   my @files;
@@ -31,9 +66,22 @@ sub main {
     return 0;
   }
 
+  our $hunspell;
   for my $name (@dictionaries) {
-    push @files, entry($name);
+    if ($name =~ /\.dic$/) {
+      unless ($hunspell) {
+        unless (eval 'use Text::Hunspell; 1') {
+          print STDERR "Could not load Text::Hunspell for \`$name\` (hunspell-unavailable)\n";
+          next;
+        }
+        $hunspell = 1;
+      }
+      push @files, hunspell_entry($name);
+    } else {
+      push @files, entry($name);
+    }
   }
+
   my @results=@files;
   while (@files) {
     last if eof($unknown_words);
@@ -43,8 +91,26 @@ sub main {
     my $uniq = -1;
     for (my $file_id = 0; $file_id < scalar @files; $file_id++) {
       my $current = $files[$file_id];
-      my ($word, $handle) = ($current->{"word"}, $current->{"handle"});
+      my ($word, $handle, $engine) = (
+        $current->{'word'},
+        $current->{'handle'},
+        $current->{'engine'},
+      );
       while ($word ne '' && $word lt $unknown) {
+        if ($engine) {
+          my $token_encoded = defined $hunspell_dictionary->{'encoding'} ?
+            encode($hunspell_dictionary->{'encoding'}, $unknown) : $unknown;
+          if ($engine->check($token_encoded)) {
+            my $stem = $engine->stem($word);
+            $current->{'coverage'}->{$stem} = 1;
+            if ($uniq > -1) {
+              $uniq = -2;
+            } else {
+              $uniq = $file_id;
+            }
+          }
+          next;
+        }
         if (eof $handle) {
           $word = '';
         } else {
@@ -84,10 +150,8 @@ sub main {
   @dictionaries=split /\n/, $extra_dictionaries;
   for (my $file_id = 0; $file_id < scalar @results; $file_id++) {
     my $current = $results[$file_id];
-    my $covered = $current->{"covered"};
+    my $covered = $current->{'coverage'} ? scalar(keys %{$current->{'coverage'}}) : $current->{"covered"};
     next unless $covered;
-
-    my $handle = $current->{"handle"};
 
     my $name = $current->{"name"};
     my @pretty = grep m{[:/]$name}, @dictionaries;
@@ -98,9 +162,15 @@ sub main {
     $name = $pretty[0] if @pretty;
 
     my $uniq = $current->{"uniq"};
-    my $word = $current->{"word"};
-    $word = <$handle> while !eof($handle);
-    my $lines = $handle->input_line_number();
+    my $handle = $current->{"handle"};
+    my $lines;
+    if ($handle) {
+      my $word = $current->{"word"};
+      $word = <$handle> while !eof($handle);
+      $lines = $handle->input_line_number();
+    } else {
+      $lines = $handle->{'lines'};
+    }
 
     local $_ = $name;
     eval $re;
