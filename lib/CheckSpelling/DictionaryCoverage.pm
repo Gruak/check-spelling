@@ -9,7 +9,10 @@ use CheckSpelling::Util;
 sub entry {
   my ($name) = @_;
   my $handle;
-  open ($handle, '<:utf8', $name) or return 0;
+  unless (open ($handle, '<:utf8', $name)) {
+    print STDERR "Couldn't open dictionary `$name` (dictionary-not-found)\n";
+    return 0;
+  }
   return {
     name => $name,
     handle => $handle,
