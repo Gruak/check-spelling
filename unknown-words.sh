@@ -805,7 +805,7 @@ handle_comment() {
     (
       patch_add=1
       patch_remove=1
-      should_exclude_patterns=1
+      should_exclude_patterns=$(mktemp)
       patch_variables $comment_body > $instructions_head
     )
     git restore -- $bucket/$project 2> /dev/null || true
@@ -1661,6 +1661,8 @@ set_up_files() {
   spelling_config="${spelling_config:-"$bucket/$project/"}" \
   "$spellchecker/generate-apply.pl" > "$data_dir/apply.json"
   should_exclude_file=$data_dir/should_exclude.txt
+  should_exclude_patterns=$data_dir/should_exclude.patterns
+  remove_exclude_patterns=$data_dir/remove_exclude.patterns
   counter_summary_file=$data_dir/counter_summary.json
   candidate_summary="$data_dir/candidate_summary.txt"
   if [ "$INPUT_TASK" = 'spelling' ]; then
@@ -2086,6 +2088,22 @@ to_publish_expect() {
   esac
 }
 
+calculate_exclude_patterns() {
+  [ -n "$INPUT_ONLY_CHECK_CHANGED_FILES" ] || \
+  [ -s "$should_exclude_patterns" ] || \
+  [ ! -s "$should_exclude_file" ] && \
+    return
+  calculate_exclude_file_list=$(mktemp)
+  only_file="$only" \
+    "$scope_files" > "$calculate_exclude_file_list"
+  file_list="$calculate_exclude_file_list" \
+  should_exclude_file="$should_exclude_file" \
+  remove_excludes_file="$remove_exclude_patterns" \
+  should_exclude_patterns="$should_exclude_patterns" \
+    "$spellchecker/suggest-excludes.pl" ||
+    echo "::error title=Excludes generation failed::Please file a bug (excludes-generation-failed)" >&2
+}
+
 remove_items() {
   if to_boolean "$INPUT_ONLY_CHECK_CHANGED_FILES"; then
     echo "<!-- Because only_check_changed_files is active, checking for obsolete items cannot be performed-->"
@@ -2315,32 +2333,37 @@ spelling_body() {
     if [ -s "$should_exclude_file" ]; then
       calculate_exclude_patterns
       echo "skipped_files=$should_exclude_file" >> "$output_variables"
-      exclude_files_text=" and update file exclusions"
-      output_excludes="$(echo "
-        <details><summary>Some files were automatically ignored :see_no_evil:</summary>
+      if ! grep -qE '\w' "$should_exclude_patterns"; then
+        echo '::error title=Excludes generation failed::Please file a bug (excludes-generation-failed)' >&2
+      else
+        echo "should_exclude_patterns=$should_exclude_patterns" >> "$output_variables"
+        exclude_files_text=" and update file exclusions"
+        output_excludes="$(echo "
+          <details><summary>Some files were automatically ignored :see_no_evil:</summary>
 
-        These sample patterns would exclude them:
-        $B
-        $should_exclude_patterns
-        $B"| strip_lead)"
-      if [ "$(wc -l "$should_exclude_file" |perl -pe 's/(\d+)\s+.*/$1/')" -gt 10 ]; then
-        output_excludes_large="$(echo "
-          "'You should consider excluding directory paths (e.g. `(?:^|/)vendor/`), filenames (e.g. `(?:^|/)yarn\.lock$`), or file extensions (e.g. `\.gz$`)
-          '| strip_lead)"
+          These sample patterns would exclude them:
+          $B
+          $(cat "$should_exclude_patterns")
+          $B"| strip_lead)"
+        if [ "$(wc -l "$should_exclude_file" |perl -pe 's/(\d+)\s+.*/$1/')" -gt 10 ]; then
+          output_excludes_large="$(echo "
+            "'You should consider excluding directory paths (e.g. `(?:^|/)vendor/`), filenames (e.g. `(?:^|/)yarn\.lock$`), or file extensions (e.g. `\.gz$`)
+            '| strip_lead)"
+        fi
+        output_excludes_suffix="$(echo "
+
+          You should consider adding them to:
+          $B$n" | strip_lead
+
+          )$n$(echo "$excludes_files" |
+          xargs -n1 echo)$n$B$(echo '
+
+          File matching is via Perl regular expressions.
+
+          To check these files, more of their words need to be in the dictionary than not. You can use `patterns.txt` to exclude portions, add items to the dictionary (e.g. by adding them to `allow.txt`), or fix typos.
+          </details>
+        ' | strip_lead)"
       fi
-      output_excludes_suffix="$(echo "
-
-        You should consider adding them to:
-        $B$n" | strip_lead
-
-        )$n$(echo "$excludes_files" |
-        xargs -n1 echo)$n$B$(echo '
-
-        File matching is via Perl regular expressions.
-
-        To check these files, more of their words need to be in the dictionary than not. You can use `patterns.txt` to exclude portions, add items to the dictionary (e.g. by adding them to `allow.txt`), or fix typos.
-        </details>
-      ' | strip_lead)"
     fi
     if [ -s "$counter_summary_file" ]; then
       get_has_errors
