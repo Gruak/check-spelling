@@ -1386,7 +1386,6 @@ check_perl_libraries() {
     add_perl_lib Hash::Merge libhash-merge-perl
   fi
   if need_hunspell; then
-    add_app hunspell
     add_perl_lib Text::Hunspell libtext-hunspell-perl
   fi
 }
